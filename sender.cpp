@@ -35,26 +35,31 @@ int main() {
     uint8_t crc = computeCRC(message);
     std::string packet = message + static_cast<char>(crc);
 
-    ssize_t sent = send(sock, packet.c_str(), packet.size(), 0);
-    if (sent < 0) {
-        perror("Send failed");
-        close(sock);
-        return 1;
-    }
-    std::cout << "Sent message + CRC (0x" << std::hex << (int)crc << std::dec << ")\n";
+    while (true) {
+        ssize_t sent = send(sock, packet.c_str(), packet.size(), 0);
+        if (sent < 0) {
+            perror("Send failed");
+            close(sock);
+            return 1;
+        }
+        std::cout << "Sent message + CRC (0x" << std::hex << (int)crc << std::dec << ")\n";
 
-    char response[4] = {0};
-    ssize_t recvd = recv(sock, response, sizeof(response) - 1, 0);
-    if (recvd <= 0) {
-        std::cout << "No response or connection closed\n";
-    } else {
+        char response[4] = {0};
+        ssize_t recvd = recv(sock, response, sizeof(response) - 1, 0);
+        if (recvd <= 0) {
+            std::cout << "No response or connection closed\n";
+            break;
+        }
         std::string resp(response, recvd);
+
         if (resp == "ACK") {
             std::cout << "ACK received. Transmission successful.\n";
+            break;
         } else if (resp == "NAK") {
-            std::cout << "NAK received. Please resend message.\n";
+            std::cout << "NAK received. Resending message...\n";
+            // resend
         } else {
-            std::cout << "Unknown response: " << resp << "\n";
+            std::cout << "Unknown response: " << resp << ", resending...\n";
         }
     }
 

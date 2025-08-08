@@ -4,16 +4,34 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <random>
+#include <cstdlib>
 #include "crc.h"
 
 #define SERVER_IP "127.0.0.43"
 #define SERVER_PORT 5000
 
+// Function to flip one random bit in the message string
+void flipOneBit(std::string& msg) {
+    if (msg.empty()) return;
+    size_t bitPos = rand() % (msg.size() * 8);
+    size_t bytePos = bitPos / 8;
+    size_t bitInByte = bitPos % 8;
+
+    msg[bytePos] ^= (1 << bitInByte);
+}
+
 int main() {
+    srand(time(nullptr)); // seed random
+
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
         perror("Socket creation failed");
+        return 1;
+    }
+
+    int opt = 1;
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt failed");
         return 1;
     }
 
@@ -47,50 +65,69 @@ int main() {
 
     char buffer[1024];
     ssize_t len = recv(client_fd, buffer, sizeof(buffer), 0);
-    if (len == 0) {
-        std::cout << "Client closed the connection before sending data.\n";
-    } else if (len < 0) {
-        perror("Receive error");
-    } else {
-        std::string data(buffer, len);
-        if (data.size() < 1) {
-            std::cerr << "No data received\n";
-        } else {
-            unsigned char received_crc = static_cast<unsigned char>(data.back());
-            std::string message = data.substr(0, data.size() - 1);
+    if (len <= 0) {
+        std::cerr << "Receive failed or connection closed\n";
+        close(client_fd);
+        close(server_fd);
+        return 1;
+    }
 
-            std::cout << "Original received message: " << message << "\n";
+    std::string data(buffer, len);
+    if (data.size() < 1) {
+        std::cerr << "No data received\n";
+        close(client_fd);
+        close(server_fd);
+        return 1;
+    }
 
-            // Flip 1 random bit in the received message to simulate error
-            std::random_device rd;
-            std::mt19937 gen(rd());
-            std::uniform_int_distribution<> byte_dist(0, (int)message.size() - 1);
-            std::uniform_int_distribution<> bit_dist(0, 7);
+    // Separate message and CRC
+    char received_crc = data.back();
+    std::string message = data.substr(0, data.size() - 1);
 
-            int byte_pos = byte_dist(gen);
-            int bit_pos = bit_dist(gen);
+    uint8_t calc_crc = computeCRC(message);
 
-            std::cout << "Flipping bit " << bit_pos << " of byte " << byte_pos << " to simulate error.\n";
-            message[byte_pos] ^= (1 << bit_pos);
+    std::cout << "Received message: " << message << "\n";
+    std::cout << "Received CRC: 0x" << std::hex << (unsigned char)received_crc
+              << ", Calculated CRC: 0x" << (int)calc_crc << std::dec << "\n";
 
-            std::cout << "Message after bit flip: " << message << "\n";
+    // Ask user whether to flip a bit or not
+    std::cout << "Select option:\n1. No error (check normal)\n2. Flip one bit (simulate error)\nChoice: ";
+    int choice;
+    std::cin >> choice;
+    std::cin.ignore(); // clear newline
 
-            uint8_t calc_crc = computeCRC(message);
-
-            std::cout << "Received CRC: 0x" << std::hex << (int)received_crc
-                      << ", Calculated CRC after error injection: 0x" << (int)calc_crc << std::dec << "\n";
-
-            const char* response;
-
-            if (received_crc == calc_crc) {
+    switch(choice) {
+        case 1: {
+            if ((unsigned char)received_crc == calc_crc) {
                 std::cout << "✅ CRC matched. Message is valid.\n";
-                response = "ACK";
+                send(client_fd, "ACK", 3, 0);
             } else {
-                std::cout << "❌ CRC mismatch! Invalid data detected. Please resend.\n";
-                response = "NAK";
+                std::cout << "❌ CRC mismatch! Message invalid.\n";
+                send(client_fd, "NAK", 3, 0);
             }
+            break;
+        }
 
-            send(client_fd, response, strlen(response), 0);
+        case 2: {
+            flipOneBit(message);
+            std::cout << "Message after flipping 1 bit: " << message << "\n";
+            uint8_t crc_flipped = computeCRC(message);
+            std::cout << "New CRC after flipping: 0x" << std::hex << (int)crc_flipped << std::dec << "\n";
+
+            if ((unsigned char)received_crc == calc_crc) {
+                std::cout << "But original CRC doest not matches CRC after error generation, so message is INVALID (bit flip simulated).\n";
+                send(client_fd, "NAK", 3, 0);
+            } else {
+                std::cout << "CRC mismatch after bit flip. Invalid message.\n";
+                send(client_fd, "NAK", 3, 0);
+            }
+            break;
+        }
+
+        default: {
+            std::cout << "Invalid choice. Closing connection.\n";
+            send(client_fd, "NAK", 3, 0);
+            break;
         }
     }
 
